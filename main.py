@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Replace with your Telegram Bot Token (Use environment variables for security!)
-BOT_TOKEN = "8047194490:AAERGpWtNX5aYsFbnGKnFrJKt4x4n6eaLt4"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Load quiz questions from JSON file
 with open("quiz.json", "r", encoding="utf-8") as file:
