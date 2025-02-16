@@ -44,6 +44,7 @@ async def send_quiz(context: ContextTypes.DEFAULT_TYPE):
     options = question_data["options"]
     correct_index = question_data["answer"]
 
+    # Send quiz question
     await context.bot.send_poll(
         chat_id=chat_id,
         question=question,
@@ -52,6 +53,25 @@ async def send_quiz(context: ContextTypes.DEFAULT_TYPE):
         correct_option_id=correct_index,
         is_anonymous=False
     )
+
+    # Schedule a task to delete this question after 15 minutes
+    context.job_queue.run_once(delete_question, 15 * 60, chat_id=chat_id, question=question)
+
+async def delete_question(context: ContextTypes.DEFAULT_TYPE):
+    """Deletes the older question after 15 minutes."""
+    job = context.job
+    chat_id = job.chat_id
+    question = job.data["question"]
+
+    # Send a message indicating question has expired
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"⏳ The question '{question}' has expired and is no longer available!"
+    )
+
+    # If the quiz is still active, continue to the next question
+    if chat_id in active_quizzes:
+        await send_quiz(context)
 
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Starts an automatic quiz that sends questions every 30 seconds."""
