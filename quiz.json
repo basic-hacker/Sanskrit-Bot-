@@ -1,0 +1,17 @@
+[
+    {
+        "question": "What is the capital of India?",
+        "options": ["Mumbai", "New Delhi", "Bangalore", "Chennai"],
+        "answer": 1
+    },
+    {
+        "question": "Who wrote the Ramayana?",
+        "options": ["Tulsidas", "Kalidasa", "Valmiki", "Ved Vyasa"],
+        "answer": 2
+    },
+    {
+        "question": "What is the national animal of India?",
+        "options": ["Lion", "Elephant", "Tiger", "Peacock"],
+        "answer": 2
+    }
+]
