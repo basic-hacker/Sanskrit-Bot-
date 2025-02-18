@@ -34,7 +34,8 @@ scheduler = AsyncIOScheduler()
 scheduler.start()
 
 # Telegram Bot Token (Replace with your actual bot token)
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("BOT_TOKEN")
+
 
 # Function to start the bot
 async def start(update: Update, context: CallbackContext) -> None:
