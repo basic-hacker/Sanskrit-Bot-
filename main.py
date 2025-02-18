@@ -1,171 +1,162 @@
-import os
 import json
-import random
 import logging
+import os
+import asyncio
 from telegram import Update, Poll
 from telegram.ext import (
-    Application, CommandHandler, ContextTypes, MessageHandler, filters
+    Application,
+    CommandHandler,
+    MessageHandler,
+    PollAnswerHandler,
+    CallbackContext,
+    filters
 )
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ✅ Logging setup
-logging.basicConfig(level=logging.INFO)
+# Enable logging
+logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ✅ Load bot token (replace with actual token if needed)
+# Load Questions from JSON File
+QUESTION_FILE = "questions.json"
+if os.path.exists(QUESTION_FILE):
+    with open(QUESTION_FILE, "r", encoding="utf-8") as file:
+        questions_data = json.load(file)
+else:
+    questions_data = []
+
+# Store active quizzes and messages for auto-delete
+active_quizzes = {}
+sent_messages = {}
+
+# Scheduler for automatic cleanup
+scheduler = AsyncIOScheduler()
+scheduler.start()
+
+# Telegram Bot Token (Replace with your actual bot token)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# ✅ Load quiz questions from JSON
-with open("quiz.json", "r", encoding="utf-8") as file:
-    quiz_questions = json.load(file)
-
-# ✅ Store active quizzes
-active_quizzes = {}
-
-# ✅ Command: /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Welcomes users and provides instructions."""
-    await update.message.reply_text("🤖 स्वागत है! क्विज़ शुरू करने के लिए /quiz टाइप करें।")
-
-# ✅ Command: /quiz (Ask user to choose a topic)
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ask user to choose a topic before starting the quiz."""
-    chat_id = update.message.chat_id
-
-    # Get unique topics
-    topic_map = {q["topic_code"]: q["topic_name"] for q in quiz_questions}
-    topics = list(topic_map.values())  # List of topic names
-    topic_codes = list(topic_map.keys())  # Corresponding topic codes
-
-    # Send poll to choose topic
-    message = await update.message.reply_poll(
-        question="📚 किस विषय का क्विज़ शुरू करें?",
-        options=topics,
-        is_anonymous=False
-    )
-
-    # Store topic mapping
-    active_quizzes[chat_id] = {
-        "poll_message_id": message.message_id,
-        "topic_map": topic_map,
-        "topic_codes": topic_codes,
-        "chosen_topic_code": None
-    }
-
-# ✅ Handle topic selection
-async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start quiz with the selected topic."""
-    answer = update.poll_answer
-    user_id = answer.user.id
+# Function to start the bot
+async def start(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
-
-    if chat_id in active_quizzes:
-        topic_map = active_quizzes[chat_id]["topic_map"]
-        topic_codes = active_quizzes[chat_id]["topic_codes"]
-        selected_topic_code = topic_codes[answer.option_ids[0]]  # Get topic_code from index
-
-        # Set the chosen topic code
-        active_quizzes[chat_id]["chosen_topic_code"] = selected_topic_code
-        selected_topic_name = topic_map[selected_topic_code]  # Get topic_name
-
-        await context.bot.send_message(chat_id, f"✅ {selected_topic_name} का क्विज़ शुरू हो रहा है!")
-        await send_quiz(update, context)
-
-# ✅ Function to send quiz questions
-async def send_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a quiz question every 30 seconds."""
-    chat_id = update.effective_chat.id
-
-    if chat_id not in active_quizzes or not active_quizzes[chat_id]["chosen_topic_code"]:
-        return  # No active quiz
-
-    # Get topic_code
-    selected_topic_code = active_quizzes[chat_id]["chosen_topic_code"]
-
-    # Fetch questions from the selected topic_code
-    topic_questions = [q for q in quiz_questions if q["topic_code"] == selected_topic_code]
+    topics = list(set(q["topic_name"] for q in questions_data))
     
-    if not topic_questions:
-        await context.bot.send_message(chat_id, "❌ इस विषय के लिए कोई प्रश्न उपलब्ध नहीं है।")
+    if not topics:
+        await update.message.reply_text("No topics available.")
+        return
+    
+    topic_list = "\n".join(f"- {t}" for t in topics)
+    await update.message.reply_text(f"📚 Available Topics:\n{topic_list}\n\nUse /quiz <topic_code> to start a quiz.")
+
+# Function to start quiz based on selected topic
+async def start_quiz(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    
+    if len(context.args) == 0:
+        await update.message.reply_text("⚠ Please provide a topic code. Example: /quiz vaidik_samhita")
         return
 
-    question_data = random.choice(topic_questions)
-    question = question_data["question"]
-    options = question_data["options"]
-    correct_index = question_data["answer"]
+    topic_code = context.args[0]
+    topic_questions = [q for q in questions_data if q["topic_code"] == topic_code]
 
-    # Send the quiz poll
+    if not topic_questions:
+        await update.message.reply_text("⚠ Invalid topic code. Use /start to see available topics.")
+        return
+
+    active_quizzes[chat_id] = {"questions": topic_questions, "index": 0}
+    await send_quiz(update, context)
+
+# Function to send quiz questions every 30 seconds
+async def send_quiz(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
+    if chat_id not in active_quizzes:
+        return
+
+    quiz_data = active_quizzes[chat_id]
+    index = quiz_data["index"]
+    
+    if index >= len(quiz_data["questions"]):
+        del active_quizzes[chat_id]
+        await context.bot.send_message(chat_id, "✅ Quiz Completed!")
+        return
+
+    question_data = quiz_data["questions"][index]
+    quiz_data["index"] += 1
+
     message = await context.bot.send_poll(
-        chat_id=chat_id,
-        question=question,
-        options=options,
+        chat_id,
+        question=question_data["question"],
+        options=question_data["options"],
         type=Poll.QUIZ,
-        correct_option_id=correct_index,
-        is_anonymous=False
+        correct_option_id=question_data["answer"],
+        is_anonymous=False,
     )
 
-    # Store message ID for deletion
-    context.job_queue.run_once(delete_message, when=900, data={"chat_id": chat_id, "message_id": message.message_id})
+    # Store the message for auto-delete
+    if chat_id not in sent_messages:
+        sent_messages[chat_id] = []
+    
+    sent_messages[chat_id].append(message.message_id)
+    
+    # Schedule deletion after 15 minutes
+    context.job_queue.run_once(delete_old_messages, 900, chat_id=chat_id)
 
-# ✅ Auto-delete messages after 15 minutes
-async def delete_message(context: ContextTypes.DEFAULT_TYPE):
-    """Deletes quiz messages after 15 minutes."""
-    job = context.job
-    data = job.data
+    # Schedule the next question
+    context.job_queue.run_once(send_quiz, 30, chat_id=chat_id)
 
-    try:
-        await context.bot.delete_message(data["chat_id"], data["message_id"])
-    except Exception as e:
-        logger.warning(f"❌ Failed to delete message: {e}")
+# Function to handle poll answers
+async def handle_poll_answer(update: Update, context: CallbackContext) -> None:
+    poll_id = update.poll.id
+    logger.info(f"Poll Answer Received: {poll_id}")
 
-# ✅ Command: /stopquiz (Stops the quiz)
-async def stop_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stops the ongoing quiz."""
+# Function to stop the quiz
+async def stop_quiz(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     if chat_id in active_quizzes:
         del active_quizzes[chat_id]
-        await update.message.reply_text("⛔ क्विज़ बंद कर दिया गया।")
+        await update.message.reply_text("⛔ Quiz Stopped!")
     else:
-        await update.message.reply_text("⚠ कोई भी क्विज़ सक्रिय नहीं है।")
+        await update.message.reply_text("⚠ No active quiz to stop.")
 
-# ✅ Command: /startquiz (Restarts quiz)
-async def restart_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Restarts the quiz."""
+# Function to manually clean chat
+async def clean_chat(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
-    if chat_id in active_quizzes:
-        await update.message.reply_text("✅ क्विज़ फिर से शुरू हो रहा है...")
-        await send_quiz(update, context)
+    if chat_id in sent_messages:
+        for msg_id in sent_messages[chat_id]:
+            try:
+                await context.bot.delete_message(chat_id, msg_id)
+            except Exception as e:
+                logger.error(f"Error deleting message: {e}")
+        sent_messages[chat_id] = []
+        await update.message.reply_text("🧹 Chat cleaned!")
     else:
-        await update.message.reply_text("⚠ कोई भी क्विज़ सक्रिय नहीं है। पहले /quiz कमांड का उपयोग करें।")
+        await update.message.reply_text("⚠ No messages to clean.")
 
-# ✅ Command: /clearchat (Deletes bot messages)
-async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Deletes all messages sent by the bot in the chat."""
-    chat_id = update.message.chat_id
+# Function to delete old messages automatically
+async def delete_old_messages(context: CallbackContext) -> None:
+    chat_id = context.job.chat_id
+    if chat_id in sent_messages:
+        for msg_id in sent_messages[chat_id]:
+            try:
+                await context.bot.delete_message(chat_id, msg_id)
+            except Exception as e:
+                logger.error(f"Error deleting message: {e}")
+        sent_messages[chat_id] = []
 
-    async for message in context.bot.get_chat_history(chat_id, limit=50):
-        try:
-            await context.bot.delete_message(chat_id, message.message_id)
-        except Exception as e:
-            logger.warning(f"❌ Failed to delete message: {e}")
-
-    await update.message.reply_text("✅ चैट साफ़ कर दी गई!", quote=True)
-
-# ✅ Main function to run bot
+# Main function
 def main():
-    """Run the bot."""
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    # ✅ Command handlers
+    application = Application.builder().token(TOKEN).build()
+    
+    # Command Handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("quiz", start_quiz))
     application.add_handler(CommandHandler("stopquiz", stop_quiz))
-    application.add_handler(CommandHandler("startquiz", restart_quiz))
-    application.add_handler(CommandHandler("clearchat", clear_chat))
+    application.add_handler(CommandHandler("clean", clean_chat))
 
-    # ✅ Poll Answer Handler (to capture topic selection)
-    application.add_handler(MessageHandler(filters.PollAnswer, handle_poll_answer))
+    # Poll Answer Handler
+    application.add_handler(PollAnswerHandler(handle_poll_answer))
 
-    logger.info("✅ Quiz Bot is running... 🚀")
+    # Run bot
     application.run_polling()
 
 if __name__ == "__main__":
