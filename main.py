@@ -3,49 +3,98 @@ import json
 import random
 import logging
 from telegram import Update, Poll
-from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue
+from telegram.ext import (
+    Application, CommandHandler, ContextTypes, MessageHandler, filters
+)
 
-# Set up logging
+# ✅ Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Get bot token from environment variable
+# ✅ Load bot token (replace with actual token if needed)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN environment variable not set!")
 
-# Load quiz questions safely
-try:
-    with open("quiz.json", "r", encoding="utf-8") as file:
-        quiz_questions = json.load(file)
-        if not isinstance(quiz_questions, list):
-            raise ValueError("❌ quiz.json should be a list of questions!")
-except (json.JSONDecodeError, FileNotFoundError) as e:
-    raise ValueError(f"❌ Error loading quiz.json: {e}")
+# ✅ Load quiz questions from JSON
+with open("quiz.json", "r", encoding="utf-8") as file:
+    quiz_questions = json.load(file)
 
-# Dictionary to track active quizzes per chat
+# ✅ Store active quizzes
 active_quizzes = {}
 
+# ✅ Command: /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command to welcome users."""
-    await update.message.reply_text("🤖 Welcome to the Quiz Bot!\n\nCommands:\n/startquiz - Start automatic quiz\n/stopquiz - Stop the quiz")
+    """Welcomes users and provides instructions."""
+    await update.message.reply_text("🤖 स्वागत है! क्विज़ शुरू करने के लिए /quiz टाइप करें।")
 
-async def send_quiz(context: ContextTypes.DEFAULT_TYPE):
-    """Sends a new quiz question."""
-    job = context.job
-    chat_id = job.chat_id
+# ✅ Command: /quiz (Ask user to choose a topic)
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ask user to choose a topic before starting the quiz."""
+    chat_id = update.message.chat_id
 
-    # If the chat ID is not in active_quizzes, stop sending questions
-    if chat_id not in active_quizzes:
+    # Get unique topics
+    topic_map = {q["topic_code"]: q["topic_name"] for q in quiz_questions}
+    topics = list(topic_map.values())  # List of topic names
+    topic_codes = list(topic_map.keys())  # Corresponding topic codes
+
+    # Send poll to choose topic
+    message = await update.message.reply_poll(
+        question="📚 किस विषय का क्विज़ शुरू करें?",
+        options=topics,
+        is_anonymous=False
+    )
+
+    # Store topic mapping
+    active_quizzes[chat_id] = {
+        "poll_message_id": message.message_id,
+        "topic_map": topic_map,
+        "topic_codes": topic_codes,
+        "chosen_topic_code": None
+    }
+
+# ✅ Handle topic selection
+async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start quiz with the selected topic."""
+    answer = update.poll_answer
+    user_id = answer.user.id
+    chat_id = update.effective_chat.id
+
+    if chat_id in active_quizzes:
+        topic_map = active_quizzes[chat_id]["topic_map"]
+        topic_codes = active_quizzes[chat_id]["topic_codes"]
+        selected_topic_code = topic_codes[answer.option_ids[0]]  # Get topic_code from index
+
+        # Set the chosen topic code
+        active_quizzes[chat_id]["chosen_topic_code"] = selected_topic_code
+        selected_topic_name = topic_map[selected_topic_code]  # Get topic_name
+
+        await context.bot.send_message(chat_id, f"✅ {selected_topic_name} का क्विज़ शुरू हो रहा है!")
+        await send_quiz(update, context)
+
+# ✅ Function to send quiz questions
+async def send_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a quiz question every 30 seconds."""
+    chat_id = update.effective_chat.id
+
+    if chat_id not in active_quizzes or not active_quizzes[chat_id]["chosen_topic_code"]:
+        return  # No active quiz
+
+    # Get topic_code
+    selected_topic_code = active_quizzes[chat_id]["chosen_topic_code"]
+
+    # Fetch questions from the selected topic_code
+    topic_questions = [q for q in quiz_questions if q["topic_code"] == selected_topic_code]
+    
+    if not topic_questions:
+        await context.bot.send_message(chat_id, "❌ इस विषय के लिए कोई प्रश्न उपलब्ध नहीं है।")
         return
 
-    question_data = random.choice(quiz_questions)
+    question_data = random.choice(topic_questions)
     question = question_data["question"]
     options = question_data["options"]
     correct_index = question_data["answer"]
 
-    # Send quiz question
-    await context.bot.send_poll(
+    # Send the quiz poll
+    message = await context.bot.send_poll(
         chat_id=chat_id,
         question=question,
         options=options,
@@ -54,67 +103,67 @@ async def send_quiz(context: ContextTypes.DEFAULT_TYPE):
         is_anonymous=False
     )
 
-    # Schedule a task to delete this question after 15 minutes
-    context.job_queue.run_once(delete_question, 15 * 60, chat_id=chat_id, question=question)
+    # Store message ID for deletion
+    context.job_queue.run_once(delete_message, when=900, data={"chat_id": chat_id, "message_id": message.message_id})
 
-async def delete_question(context: ContextTypes.DEFAULT_TYPE):
-    """Deletes the older question after 15 minutes."""
+# ✅ Auto-delete messages after 15 minutes
+async def delete_message(context: ContextTypes.DEFAULT_TYPE):
+    """Deletes quiz messages after 15 minutes."""
     job = context.job
-    chat_id = job.chat_id
-    question = job.data["question"]
+    data = job.data
 
-    # Send a message indicating question has expired
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"⏳ The question '{question}' has expired and is no longer available!"
-    )
+    try:
+        await context.bot.delete_message(data["chat_id"], data["message_id"])
+    except Exception as e:
+        logger.warning(f"❌ Failed to delete message: {e}")
 
-    # If the quiz is still active, continue to the next question
-    if chat_id in active_quizzes:
-        await send_quiz(context)
-
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts an automatic quiz that sends questions every 30 seconds."""
-    chat_id = update.effective_chat.id
-
-    # Check if quiz is already running
-    if chat_id in active_quizzes:
-        await update.message.reply_text("🚀 The quiz is already running!")
-        return
-
-    # Add chat to active quizzes
-    active_quizzes[chat_id] = True
-
-    # Schedule the quiz job every 30 seconds
-    context.job_queue.run_repeating(send_quiz, interval=30, first=0, chat_id=chat_id)
-
-    await update.message.reply_text("✅ Quiz started! A new question will be sent every 30 seconds.")
-
+# ✅ Command: /stopquiz (Stops the quiz)
 async def stop_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Stops the automatic quiz."""
+    """Stops the ongoing quiz."""
     chat_id = update.effective_chat.id
+    if chat_id in active_quizzes:
+        del active_quizzes[chat_id]
+        await update.message.reply_text("⛔ क्विज़ बंद कर दिया गया।")
+    else:
+        await update.message.reply_text("⚠ कोई भी क्विज़ सक्रिय नहीं है।")
 
-    # Check if quiz is running
-    if chat_id not in active_quizzes:
-        await update.message.reply_text("⚠️ No quiz is running!")
-        return
+# ✅ Command: /startquiz (Restarts quiz)
+async def restart_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Restarts the quiz."""
+    chat_id = update.effective_chat.id
+    if chat_id in active_quizzes:
+        await update.message.reply_text("✅ क्विज़ फिर से शुरू हो रहा है...")
+        await send_quiz(update, context)
+    else:
+        await update.message.reply_text("⚠ कोई भी क्विज़ सक्रिय नहीं है। पहले /quiz कमांड का उपयोग करें।")
 
-    # Remove chat from active quizzes
-    del active_quizzes[chat_id]
+# ✅ Command: /clearchat (Deletes bot messages)
+async def clear_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Deletes all messages sent by the bot in the chat."""
+    chat_id = update.message.chat_id
 
-    # Remove all scheduled jobs for this chat
-    context.job_queue.stop()
+    async for message in context.bot.get_chat_history(chat_id, limit=50):
+        try:
+            await context.bot.delete_message(chat_id, message.message_id)
+        except Exception as e:
+            logger.warning(f"❌ Failed to delete message: {e}")
 
-    await update.message.reply_text("🛑 Quiz stopped!")
+    await update.message.reply_text("✅ चैट साफ़ कर दी गई!", quote=True)
 
+# ✅ Main function to run bot
 def main():
     """Run the bot."""
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Command handlers
+    # ✅ Command handlers
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("startquiz", start_quiz))
+    application.add_handler(CommandHandler("quiz", start_quiz))
     application.add_handler(CommandHandler("stopquiz", stop_quiz))
+    application.add_handler(CommandHandler("startquiz", restart_quiz))
+    application.add_handler(CommandHandler("clearchat", clear_chat))
+
+    # ✅ Poll Answer Handler (to capture topic selection)
+    application.add_handler(MessageHandler(filters.PollAnswer, handle_poll_answer))
 
     logger.info("✅ Quiz Bot is running... 🚀")
     application.run_polling()
