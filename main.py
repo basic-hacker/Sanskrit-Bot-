@@ -18,7 +18,7 @@ logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=lo
 logger = logging.getLogger(__name__)
 
 # Load Questions from JSON File
-QUESTION_FILE = "questions.json"
+QUESTION_FILE = "quiz.json"
 if os.path.exists(QUESTION_FILE):
     with open(QUESTION_FILE, "r", encoding="utf-8") as file:
         questions_data = json.load(file)
