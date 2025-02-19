@@ -56,19 +56,25 @@ async def start_quiz(update: Update, context: CallbackContext) -> None:
         await update.message.reply_text("⚠ Please provide a topic name. Example: /quiz वैदिक संहिता")
         return
 
-    topic_name = " ".join(context.args)  # Allow multi-word topics
-    topic_questions = [q for q in questions_data if q["topic_name"] == topic_name]
+    user_input_topic = " ".join(context.args).strip()  # Remove extra spaces
+    available_topics = {q["topic_name"].strip(): q["topic_name"] for q in questions_data}
 
-    if not topic_questions:
-        await update.message.reply_text("⚠ Invalid topic name. Use /startquiz to see available topics.")
+    # Try to match the input with available topics
+    matched_topic = available_topics.get(user_input_topic)
+    
+    if not matched_topic:
+        await update.message.reply_text("⚠ Invalid topic name. Use /start to see available topics.")
         return
+
+    topic_questions = [q for q in questions_data if q["topic_name"] == matched_topic]
 
     active_quizzes[chat_id] = {"questions": topic_questions, "index": 0}
 
-    await update.message.reply_text("🎯 Quiz Started! You will receive a new question every 30 seconds.")
-
+    await update.message.reply_text(f"🎯 {matched_topic} Quiz Started! You will receive a new question every 30 seconds.")
+    
     # Schedule the first question immediately
-    context.job_queue.run_once(send_quiz, 1, data=chat_id)  
+    context.job_queue.run_once(send_quiz, 1, data=chat_id)
+
 
 # Function to send quiz questions every 30 seconds
 async def send_quiz(context: CallbackContext) -> None:
