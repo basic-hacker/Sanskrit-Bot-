@@ -60,7 +60,7 @@ async def start_quiz(update: Update, context: CallbackContext) -> None:
     topic_questions = [q for q in questions_data if q["topic_name"] == topic_name]
 
     if not topic_questions:
-        await update.message.reply_text("⚠ Invalid topic name. Use /start to see available topics.")
+        await update.message.reply_text("⚠ Invalid topic name. Use /startquiz to see available topics.")
         return
 
     active_quizzes[chat_id] = {"questions": topic_questions, "index": 0}
