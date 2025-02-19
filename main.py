@@ -32,42 +32,49 @@ sent_messages = {}
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-# Telegram Bot Token (Make sure this is set)
+# Telegram Bot Token (Replace with your actual bot token)
 TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("❌ BOT_TOKEN is not set. Please set it in the environment variables.")
+
 
 # Function to start the bot
 async def start(update: Update, context: CallbackContext) -> None:
+    chat_id = update.effective_chat.id
     topics = list(set(q["topic_name"] for q in questions_data))
+    
     if not topics:
         await update.message.reply_text("No topics available.")
         return
     
     topic_list = "\n".join(f"- {t}" for t in topics)
-    await update.message.reply_text(f"📚 Available Topics:\n{topic_list}\n\nUse /quiz <topic_code> to start a quiz.")
+    await update.message.reply_text(f"📚 Available Topics:\n{topic_list}\n\nUse /quiz <topic_name> to start a quiz.")
 
-# Function to start quiz
+# Function to start quiz based on selected topic
 async def start_quiz(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     
-    if not context.args:
-        await update.message.reply_text("⚠ Please provide a topic code. Example: /quiz vaidik_samhita")
+    if len(context.args) == 0:
+        await update.message.reply_text("⚠ Please provide a topic name. Example: /quiz वैदिक संहिता")
         return
 
-    topic_code = context.args[0]
-    topic_questions = [q for q in questions_data if q["topic_code"] == topic_code]
+    topic_name = " ".join(context.args)  # Allow multi-word topics
+    topic_questions = [q for q in questions_data if q["topic_name"] == topic_name]
 
     if not topic_questions:
-        await update.message.reply_text("⚠ Invalid topic code. Use /start to see available topics.")
+        await update.message.reply_text("⚠ Invalid topic name. Use /start to see available topics.")
         return
 
     active_quizzes[chat_id] = {"questions": topic_questions, "index": 0}
-    await send_quiz(update, context)
 
-# Function to send quiz questions
-async def send_quiz(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
+    await update.message.reply_text("🎯 Quiz Started! You will receive a new question every 30 seconds.")
+
+    # Schedule the first question immediately
+    context.job_queue.run_once(send_quiz, 1, data=chat_id)  
+
+# Function to send quiz questions every 30 seconds
+async def send_quiz(context: CallbackContext) -> None:
+    job = context.job
+    chat_id = job.data  # Retrieve chat_id from job data
+
     if chat_id not in active_quizzes:
         return
 
@@ -91,20 +98,17 @@ async def send_quiz(update: Update, context: CallbackContext) -> None:
         is_anonymous=False,
     )
 
-    # Store message ID for auto-delete
-    sent_messages.setdefault(chat_id, []).append(message.message_id)
-
+    # Store the message for auto-delete
+    if chat_id not in sent_messages:
+        sent_messages[chat_id] = []
+    
+    sent_messages[chat_id].append(message.message_id)
+    
     # Schedule deletion after 15 minutes
     context.job_queue.run_once(delete_old_messages, 900, data=chat_id)
 
-    # Schedule the next question
-    context.job_queue.run_once(send_quiz_task, 30, data=chat_id)
-
-# Function to wrap `send_quiz` properly
-async def send_quiz_task(context: CallbackContext) -> None:
-    chat_id = context.job.data
-    update = Update(update_id=0, message=None)  # Fake update to pass
-    await send_quiz(update, context)
+    # Schedule the next question **correctly**
+    context.job_queue.run_once(send_quiz, 30, data=chat_id)  # Now it works!
 
 # Function to handle poll answers
 async def handle_poll_answer(update: Update, context: CallbackContext) -> None:
@@ -136,7 +140,8 @@ async def clean_chat(update: Update, context: CallbackContext) -> None:
 
 # Function to delete old messages automatically
 async def delete_old_messages(context: CallbackContext) -> None:
-    chat_id = context.job.data
+    job = context.job
+    chat_id = job.data  # Retrieve chat_id from job data
     if chat_id in sent_messages:
         for msg_id in sent_messages[chat_id]:
             try:
