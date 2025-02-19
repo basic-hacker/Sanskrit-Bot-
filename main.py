@@ -6,7 +6,6 @@ from telegram import Update, Poll
 from telegram.ext import (
     Application,
     CommandHandler,
-    MessageHandler,
     PollAnswerHandler,
     CallbackContext,
     filters
@@ -33,15 +32,14 @@ sent_messages = {}
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-# Telegram Bot Token (Replace with your actual bot token)
+# Telegram Bot Token (Make sure this is set)
 TOKEN = os.getenv("BOT_TOKEN")
-
+if not TOKEN:
+    raise ValueError("❌ BOT_TOKEN is not set. Please set it in the environment variables.")
 
 # Function to start the bot
 async def start(update: Update, context: CallbackContext) -> None:
-    chat_id = update.effective_chat.id
     topics = list(set(q["topic_name"] for q in questions_data))
-    
     if not topics:
         await update.message.reply_text("No topics available.")
         return
@@ -49,11 +47,11 @@ async def start(update: Update, context: CallbackContext) -> None:
     topic_list = "\n".join(f"- {t}" for t in topics)
     await update.message.reply_text(f"📚 Available Topics:\n{topic_list}\n\nUse /quiz <topic_code> to start a quiz.")
 
-# Function to start quiz based on selected topic
+# Function to start quiz
 async def start_quiz(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     
-    if len(context.args) == 0:
+    if not context.args:
         await update.message.reply_text("⚠ Please provide a topic code. Example: /quiz vaidik_samhita")
         return
 
@@ -67,7 +65,7 @@ async def start_quiz(update: Update, context: CallbackContext) -> None:
     active_quizzes[chat_id] = {"questions": topic_questions, "index": 0}
     await send_quiz(update, context)
 
-# Function to send quiz questions every 30 seconds
+# Function to send quiz questions
 async def send_quiz(update: Update, context: CallbackContext) -> None:
     chat_id = update.effective_chat.id
     if chat_id not in active_quizzes:
@@ -93,17 +91,20 @@ async def send_quiz(update: Update, context: CallbackContext) -> None:
         is_anonymous=False,
     )
 
-    # Store the message for auto-delete
-    if chat_id not in sent_messages:
-        sent_messages[chat_id] = []
-    
-    sent_messages[chat_id].append(message.message_id)
-    
+    # Store message ID for auto-delete
+    sent_messages.setdefault(chat_id, []).append(message.message_id)
+
     # Schedule deletion after 15 minutes
-    context.job_queue.run_once(delete_old_messages, 900, chat_id=chat_id)
+    context.job_queue.run_once(delete_old_messages, 900, data=chat_id)
 
     # Schedule the next question
-    context.job_queue.run_once(send_quiz, 30, chat_id=chat_id)
+    context.job_queue.run_once(send_quiz_task, 30, data=chat_id)
+
+# Function to wrap `send_quiz` properly
+async def send_quiz_task(context: CallbackContext) -> None:
+    chat_id = context.job.data
+    update = Update(update_id=0, message=None)  # Fake update to pass
+    await send_quiz(update, context)
 
 # Function to handle poll answers
 async def handle_poll_answer(update: Update, context: CallbackContext) -> None:
@@ -135,7 +136,7 @@ async def clean_chat(update: Update, context: CallbackContext) -> None:
 
 # Function to delete old messages automatically
 async def delete_old_messages(context: CallbackContext) -> None:
-    chat_id = context.job.chat_id
+    chat_id = context.job.data
     if chat_id in sent_messages:
         for msg_id in sent_messages[chat_id]:
             try:
